@@ -56,6 +56,7 @@ impl super::Surface {
             }
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 log::warn!("Acquire failed because the surface is out of date");
+                self.needs_reconfigure = true;
                 super::Frame {
                     internal: self.frames[0],
                     swapchain: self.swapchain,
@@ -265,6 +266,7 @@ impl super::Context {
                 target_size: [0; 2],
             },
             full_screen_exclusive: fullscreen_exclusive_ext.full_screen_exclusive_supported != 0,
+            needs_reconfigure: false,
         })
     }
 

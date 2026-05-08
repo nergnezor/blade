@@ -119,6 +119,7 @@ pub struct Surface {
     next_semaphore: vk::Semaphore,
     swapchain: Swapchain,
     full_screen_exclusive: bool,
+    pub needs_reconfigure: bool,
 }
 
 pub struct XrSurface {

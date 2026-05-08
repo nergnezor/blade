@@ -815,13 +815,19 @@ impl Engine {
             Renderer::RayTracer { ref inner, .. } => inner.get_surface_size(),
             Renderer::Rasterizer { ref inner, .. } => inner.get_surface_size(),
         };
-        if new_render_size != current_render_size {
+        let needs_reconfigure = match self.target_surface {
+            TargetSurface::Window(ref surface) => surface.needs_reconfigure,
+            #[cfg(target_os = "android")]
+            _ => false,
+        };
+        if new_render_size != current_render_size || needs_reconfigure {
             log::info!("Resizing to {}", new_render_size);
             self.pacer.wait_for_previous_frame(&self.gpu_context);
             match self.target_surface {
                 TargetSurface::Window(ref mut surface) => {
                     self.gpu_context
                         .reconfigure_surface(surface, surface_config);
+                    surface.needs_reconfigure = false;
                 }
                 #[cfg(target_os = "android")]
                 _ => panic!("Engine::render is only available with TargetSurface::Window"),
