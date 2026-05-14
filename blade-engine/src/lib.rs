@@ -623,7 +623,7 @@ impl Engine {
                 ray_config: blade_helpers::default_ray_config(),
                 denoiser_enabled: true,
                 denoiser_config: blade_render::DenoiserConfig {
-                    num_passes: 4,
+                    num_passes: 2,
                     temporal_weight: 0.1,
                 },
                 post_proc_config: blade_render::PostProcConfig {

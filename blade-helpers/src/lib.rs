@@ -11,12 +11,12 @@ pub fn default_ray_config() -> blade_render::RayConfig {
     blade_render::RayConfig {
         num_environment_samples: 1,
         environment_importance_sampling: true,
-        tap_count: 2,
-        tap_radius: 20,
+        tap_count: 1,
+        tap_radius: 10,
         tap_confidence_near: 15,
         tap_confidence_far: 10,
         t_start: 0.01,
-        pairwise_mis: true,
+        pairwise_mis: false,
         defensive_mis: 0.1,
     }
 }
