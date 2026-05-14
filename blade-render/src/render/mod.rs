@@ -480,6 +480,7 @@ struct HitEntry {
     base_color_factor: [u8; 4],
     normal_texture: u32,
     normal_scale: f32,
+    emissive_factor: [u8; 4],
 }
 
 #[derive(Clone, PartialEq)]
@@ -981,6 +982,13 @@ impl RayTracer {
                         None => dummy_black,
                     },
                     normal_scale: material.normal_scale,
+                    emissive_factor: {
+                        let e = object.color_tint[3].min(1.0);
+                        [(object.color_tint[0] * e * 255.0) as u8,
+                         (object.color_tint[1] * e * 255.0) as u8,
+                         (object.color_tint[2] * e * 255.0) as u8,
+                         0]
+                    },
                 };
 
                 log::debug!("Entry[{geometry_index}] = {hit_entry:?}");

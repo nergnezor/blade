@@ -33,8 +33,10 @@ fn postfx_fs(vo: VertexOutput) -> @location(0) vec4<f32> {
     let tc = vec2<i32>(i32(vo.clip_pos.x), i32(vo.clip_pos.y));
     let illumunation = textureLoad(light_diffuse, tc, 0);
     if (debug_params.view_mode == DebugMode_Final) {
-        let albedo = textureLoad(t_albedo, tc, 0).xyz;
-        let color = albedo.xyz * illumunation.xyz;
+        let albedo_sample = textureLoad(t_albedo, tc, 0);
+        let albedo = albedo_sample.xyz;
+        let emissive = albedo_sample.a * 20.0;
+        let color = albedo.xyz * illumunation.xyz + albedo * emissive;
         if (tone_map_params.enabled != 0u) {
             // Following https://blog.en.uwa4d.com/2022/07/19/physically-based-renderingg-hdr-tone-mapping/
             let l_adjusted = tone_map_params.key_value / tone_map_params.average_lum * color;

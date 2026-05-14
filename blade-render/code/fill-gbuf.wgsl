@@ -38,6 +38,7 @@ struct HitEntry {
     base_color_factor: u32,
     normal_texture: u32,
     normal_scale: f32,
+    emissive_factor: u32,
 }
 var<storage, read> hit_entries: array<HitEntry>;
 
@@ -82,6 +83,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     var flat_normal = vec3<f32>(0.0);
     var albedo = vec3<f32>(1.0);
     var motion = vec2<f32>(0.0);
+    var emissive = 0.0;
     let enable_debug = all(global_id.xy == debug.mouse_pos);
 
     if (intersection.kind != RAY_QUERY_INTERSECTION_NONE) {
@@ -173,6 +175,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             let base_color_sample = textureSampleLevel(textures[entry.base_color_texture], sampler_linear, tex_coords, lod);
             albedo = (base_color_factor * base_color_sample).xyz;
         }
+        emissive = unpack4x8unorm(entry.emissive_factor).r;
 
         if (WRITE_DEBUG_IMAGE) {
             if (debug.view_mode == DebugMode_DiffuseAlbedoTexture) {
@@ -220,6 +223,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     textureStore(out_depth, global_id.xy, vec4<f32>(depth, 0.0, 0.0, 0.0));
     textureStore(out_basis, global_id.xy, basis);
     textureStore(out_flat_normal, global_id.xy, vec4<f32>(flat_normal, 0.0));
-    textureStore(out_albedo, global_id.xy, vec4<f32>(albedo, 0.0));
+    textureStore(out_albedo, global_id.xy, vec4<f32>(albedo, emissive));
     textureStore(out_motion, global_id.xy, vec4<f32>(motion * MOTION_SCALE, 0.0, 0.0));
 }
