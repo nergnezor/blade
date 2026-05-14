@@ -317,6 +317,14 @@ impl<B: Baker> ops::Index<Handle<B::Output>> for AssetManager<B> {
 }
 
 impl<B: Baker> AssetManager<B> {
+    pub fn get(&self, handle: Handle<B::Output>) -> Option<&B::Output> {
+        let slot = &self.slots[handle.inner];
+        if handle.version != slot.version { return None; }
+        slot.data.as_ref()
+    }
+}
+
+impl<B: Baker> AssetManager<B> {
     /// Create a new asset manager.
     ///
     /// The `target` points to the folder to store cooked assets in.

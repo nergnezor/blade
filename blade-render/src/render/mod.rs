@@ -865,15 +865,10 @@ impl RayTracer {
         gpu: &blade_graphics::Context,
         temp: &mut FrameResources,
     ) {
-        let (env_view, env_extent) = match env_map {
-            Some(handle) => {
-                let asset = &asset_hub.textures[handle];
-                (asset.view, asset.extent)
-            }
-            None => (self.dummy.white_view, blade_graphics::Extent::default()),
-        };
-        self.env_map
-            .assign(env_view, env_extent, command_encoder, gpu);
+        if let Some(asset) = env_map.and_then(|h| asset_hub.textures.get(h)) {
+            self.env_map
+                .assign(asset.view, asset.extent, command_encoder, gpu);
+        }
 
         if self.prev_acceleration_structure != blade_graphics::AccelerationStructure::default() {
             temp.acceleration_structures

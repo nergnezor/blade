@@ -94,7 +94,14 @@ impl EnvironmentMap {
         }
         self.main_view = view;
         self.size = extent;
-        self.destroy(gpu);
+        // Free old textures but keep the compute pipeline alive (we use it below).
+        if let Some(weight_texture) = self.weight_texture.take() {
+            gpu.destroy_texture(weight_texture);
+            gpu.destroy_texture_view(self.weight_view);
+        }
+        for old_view in self.weight_mips.drain(..) {
+            gpu.destroy_texture_view(old_view);
+        }
 
         let mip_level_count = extent
             .width
