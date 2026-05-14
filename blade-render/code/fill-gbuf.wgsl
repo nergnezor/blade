@@ -39,6 +39,9 @@ struct HitEntry {
     normal_texture: u32,
     normal_scale: f32,
     emissive_factor: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
 var<storage, read> hit_entries: array<HitEntry>;
 
