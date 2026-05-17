@@ -434,6 +434,7 @@ pub struct Engine {
     choir: Arc<choir::Choir>,
     data_path: String,
     time_ahead: f32,
+    point_lights: Vec<blade_render::PointLight>,
 }
 
 impl Engine {
@@ -680,6 +681,7 @@ impl Engine {
             choir,
             data_path: config.data_path.clone(),
             time_ahead: 0.0,
+            point_lights: Vec::new(),
         }
     }
 
@@ -893,6 +895,7 @@ impl Engine {
                     &self.gpu_context,
                     temp,
                 );
+                inner.set_point_lights(&self.point_lights, &self.gpu_context, command_encoder);
                 inner.prepare(
                     command_encoder,
                     &blade_render::Camera {
@@ -1780,6 +1783,21 @@ impl Engine {
         self.asset_hub.models.insert(model)
     }
 
+    /// Force-reload all model assets from disk, bypassing the asset cache.
+    pub fn reload_models(&mut self) {
+        // Wait for any in-flight asset tasks first so hot_reload isn't blocked.
+        for task in self.load_tasks.drain(..) {
+            task.join();
+        }
+        for (_key, object) in self.objects.iter_mut() {
+            for visual in object.visuals.iter_mut() {
+                if let Some(task) = self.asset_hub.models.hot_reload(&mut visual.model) {
+                    self.load_tasks.push(task.clone());
+                }
+            }
+        }
+    }
+
     /// Add a visual object from a pre-existing model handle and physics config.
     pub fn add_object_with_model(
         &mut self,
@@ -2078,8 +2096,34 @@ impl Engine {
         self.environment_map = Some(handle);
     }
 
+    /// Upload HDR environment map pixel data directly, bypassing the file asset cache.
+    pub fn set_environment_map_hdr_data(&mut self, width: u32, height: u32, data: &[[f32; 3]]) {
+        if let Some(handle) = self.environment_map {
+            let texture = &self.asset_hub.textures[handle];
+            self.asset_hub.textures.baker.update_texture_hdr(texture, data);
+        } else {
+            let texture = self.asset_hub.textures.baker.create_texture_hdr("env_hdr", width, height, data);
+            let handle = self.asset_hub.textures.insert(texture);
+            self.environment_map = Some(handle);
+        }
+    }
+
+    pub fn set_point_lights(&mut self, lights: &[blade_render::PointLight]) {
+        self.point_lights = lights.to_vec();
+    }
+
     pub fn set_gravity(&mut self, force: f32) {
         self.physics.gravity.y = -force;
+    }
+
+    pub fn reset_accumulation(&mut self) {
+        if let Renderer::RayTracer {
+            ref mut frame_config,
+            ..
+        } = self.renderer
+        {
+            frame_config.reset_reservoirs = true;
+        }
     }
 
     pub fn set_frozen(&mut self, frozen: bool) {

@@ -46,6 +46,16 @@ pub use shader::Shader;
 #[cfg(not(any(gles, target_arch = "wasm32")))]
 pub use texture::Texture;
 
+// Has to match `PointLight` in ray-trace.wgsl
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, bytemuck::Zeroable, bytemuck::Pod)]
+pub struct PointLight {
+    pub pos: [f32; 3],
+    pub radius: f32,
+    pub color: [f32; 3],
+    pub _pad: f32,
+}
+
 // Has to match the `Vertex` in shaders
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, bytemuck::Zeroable, bytemuck::Pod)]

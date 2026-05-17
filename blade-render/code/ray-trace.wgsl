@@ -1,4 +1,5 @@
 enable wgpu_ray_query;
+#include "point-lights.inc.wgsl"
 #include "quaternion.inc.wgsl"
 #include "random.inc.wgsl"
 #include "env-importance.inc.wgsl"
@@ -40,6 +41,14 @@ var prev_acc_struct: acceleration_structure;
 var env_map: texture_2d<f32>;
 var sampler_linear: sampler;
 var sampler_nearest: sampler;
+
+struct PointLight {
+    pos: vec3<f32>,
+    radius: f32,
+    color: vec3<f32>,
+    pad: f32,
+}
+var<storage, read> point_lights: array<PointLight>;
 
 struct StoredReservoir {
     light_uv: vec2<f32>,
@@ -179,6 +188,31 @@ fn evaluate_environment(dir: vec3<f32>) -> vec3<f32> {
     return textureSampleLevel(env_map, sampler_linear, uv, 0.0).xyz;
 }
 
+fn sample_point_light(light_index: u32, surface_pos: vec3<f32>, rng: ptr<function, RandomState>) -> LightSample {
+    let light = point_lights[light_index];
+    let to_light = light.pos - surface_pos;
+    let dist2 = dot(to_light, to_light);
+    let dist = sqrt(dist2);
+    var ls = LightSample();
+    ls.uv = vec2<f32>(0.0); // unused for point lights
+    let attenuation = 1.0 / max(dist2, 0.0001);
+    ls.radiance = light.color * attenuation;
+    ls.pdf = 1.0; // delta light, single sample
+    return ls;
+}
+
+fn evaluate_point_light(light_index: u32, surface_pos: vec3<f32>, surface: Surface) -> vec3<f32> {
+    let light = point_lights[light_index - 1u];
+    let to_light = light.pos - surface_pos;
+    let dist2 = dot(to_light, to_light);
+    let dist = sqrt(dist2);
+    let dir = to_light / dist;
+    let brdf = evaluate_brdf(surface, dir);
+    if (brdf <= 0.0) { return vec3<f32>(0.0); }
+    let attenuation = 1.0 / max(dist2, 0.0001);
+    return light.color * attenuation * brdf;
+}
+
 fn sample_light_from_sphere(rng: ptr<function, RandomState>) -> LightSample {
     let a = random_gen(rng);
     let h = 1.0 - 2.0 * random_gen(rng); // make sure to allow h==1
@@ -249,18 +283,16 @@ fn check_ray_occluded(acs: acceleration_structure, position: vec3<f32>, directio
     return occluded;
 }
 
-fn evaluate_reflected_light(surface: Surface, light_index: u32, light_uv: vec2<f32>) -> vec3<f32> {
-    if (light_index != 0u) {
-        return vec3<f32>(0.0);
+fn evaluate_reflected_light(surface: Surface, position: vec3<f32>, light_index: u32, light_uv: vec2<f32>) -> vec3<f32> {
+    if (light_index == 0u) {
+        let direction = map_equirect_uv_to_dir(light_uv);
+        let brdf = evaluate_brdf(surface, direction);
+        if (brdf <= 0.0) { return vec3<f32>(0.0); }
+        let radiance = textureSampleLevel(env_map, sampler_nearest, light_uv, 0.0).xyz;
+        return radiance * brdf;
+    } else {
+        return evaluate_point_light(light_index, position, surface);
     }
-    let direction = map_equirect_uv_to_dir(light_uv);
-    let brdf = evaluate_brdf(surface, direction);
-    if (brdf <= 0.0) {
-        return vec3<f32>(0.0);
-    }
-    // Note: returns radiance not modulated by albedo
-    let radiance = textureSampleLevel(env_map, sampler_nearest, light_uv, 0.0).xyz;
-    return radiance * brdf;
 }
 
 fn get_prev_pixel(pixel: vec2<i32>, pos_world: vec3<f32>) -> vec2<f32> {
@@ -285,24 +317,32 @@ fn estimate_target_score_with_occlusion(
     surface: Surface, position: vec3<f32>, light_index: u32, light_uv: vec2<f32>, acs: acceleration_structure,
     debug_len: f32, debug_color: u32,
 ) -> TargetScore {
-    if (light_index != 0u) {
-        return TargetScore();
-    }
-    let direction = map_equirect_uv_to_dir(light_uv);
-    if (dot(direction, surface.flat_normal) <= 0.0) {
-        return TargetScore();
-    }
-    let brdf = evaluate_brdf(surface, direction);
-    if (brdf <= 0.0) {
-        return TargetScore();
-    }
-
-    if (check_ray_occluded(acs, position, direction, debug_len, debug_color)) {
-        return TargetScore();
-    } else {
-        //Note: same as `evaluate_reflected_light`
+    if (light_index == 0u) {
+        let direction = map_equirect_uv_to_dir(light_uv);
+        if (dot(direction, surface.flat_normal) <= 0.0) { return TargetScore(); }
+        let brdf = evaluate_brdf(surface, direction);
+        if (brdf <= 0.0) { return TargetScore(); }
+        if (check_ray_occluded(acs, position, direction, debug_len, debug_color)) { return TargetScore(); }
         let radiance = textureSampleLevel(env_map, sampler_nearest, light_uv, 0.0).xyz;
         return make_target_score(brdf * radiance);
+    } else {
+        let light = point_lights[light_index - 1u];
+        let to_light = light.pos - position;
+        let dist = length(to_light);
+        let direction = to_light / dist;
+        if (dot(direction, surface.flat_normal) <= 0.0) { return TargetScore(); }
+        let brdf = evaluate_brdf(surface, direction);
+        if (brdf <= 0.0) { return TargetScore(); }
+        // Shadow ray: stop before the near side of the light sphere geometry
+        let shadow_max = dist - light.radius - 0.01;
+        if (shadow_max <= parameters.t_start) { return TargetScore(); }
+        var rq: ray_query;
+        let flags = RAY_FLAG_TERMINATE_ON_FIRST_HIT | RAY_FLAG_CULL_NO_OPAQUE;
+        rayQueryInitialize(&rq, acs, RayDesc(flags, 0xFFu, parameters.t_start, shadow_max, position, direction));
+        rayQueryProceed(&rq);
+        if (rayQueryGetCommittedIntersection(&rq).kind != RAY_QUERY_INTERSECTION_NONE) { return TargetScore(); }
+        let attenuation = 1.0 / max(dist * dist, 0.0001);
+        return make_target_score(brdf * light.color * attenuation);
     }
 }
 
@@ -370,6 +410,7 @@ fn compute_restir(surface: Surface, pixel: vec2<i32>, rng: ptr<function, RandomS
             bump_reservoir(&canonical, 1.0);
         }
     }
+
 
     let center_coord = get_prev_pixel(pixel, position);
 
@@ -451,7 +492,7 @@ fn compute_restir(surface: Surface, pixel: vec2<i32>, rng: ptr<function, RandomS
             other.selected_radiance = t_neighbor_at_canonical.color;
             other.weight_sum = t_neighbor_at_canonical.score * neighbor.contribution_weight * mis_neighbor;
         } else {
-            let radiance = evaluate_reflected_light(surface, neighbor.light_index, neighbor.light_uv);
+            let radiance = evaluate_reflected_light(surface, position, neighbor.light_index, neighbor.light_uv);
             other = unpack_reservoir(neighbor, max_confidence, radiance);
         }
 
@@ -485,6 +526,30 @@ fn compute_restir(surface: Surface, pixel: vec2<i32>, rng: ptr<function, RandomS
     } else {
         ro.radiance = stored.contribution_weight * reservoir.selected_radiance;
     }
+
+    // NEE: direct illumination from point lights, added on top of ReSTIR env result
+    let num_point_lights = arrayLength(&point_lights);
+    var nee_radiance = vec3<f32>(0.0);
+    for (var li = 0u; li < num_point_lights; li += 1u) {
+        let light = point_lights[li];
+        let to_light = light.pos - position;
+        let dist = length(to_light);
+        let dir = to_light / dist;
+        if (dot(dir, surface.flat_normal) <= 0.0) { continue; }
+        let brdf = evaluate_brdf(surface, dir);
+        if (brdf <= 0.0) { continue; }
+        let shadow_max = dist - light.radius - 0.01;
+        if (shadow_max <= parameters.t_start) { continue; }
+        var rq: ray_query;
+        let flags = RAY_FLAG_TERMINATE_ON_FIRST_HIT | RAY_FLAG_CULL_NO_OPAQUE;
+        rayQueryInitialize(&rq, acc_struct, RayDesc(flags, 0xFFu, parameters.t_start, shadow_max, position, dir));
+        rayQueryProceed(&rq);
+        if (rayQueryGetCommittedIntersection(&rq).kind != RAY_QUERY_INTERSECTION_NONE) { continue; }
+        let attenuation = 1.0 / max(dist * dist, 0.0001);
+        nee_radiance += brdf * light.color * attenuation;
+    }
+    ro.radiance += nee_radiance;
+
     return ro;
 }
 
@@ -510,3 +575,4 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
     textureStore(out_diffuse, global_id.xy, vec4<f32>(color, 1.0));
 }
+

@@ -166,6 +166,83 @@ impl Baker {
             extent,
         }
     }
+
+    /// Create an HDR environment map texture directly from RGB f32 pixel data.
+    pub fn create_texture_hdr(&self, name: &str, width: u32, height: u32, data: &[[f32; 3]]) -> Texture {
+        use blade_graphics as gpu;
+
+        assert_eq!(data.len(), (width * height) as usize);
+        let format = gpu::TextureFormat::Rgba32Float;
+        let extent = gpu::Extent { width, height, depth: 1 };
+        let texture = self.gpu_context.create_texture(gpu::TextureDesc {
+            name,
+            format,
+            size: extent,
+            array_layer_count: 1,
+            mip_level_count: 1,
+            dimension: gpu::TextureDimension::D2,
+            usage: gpu::TextureUsage::COPY | gpu::TextureUsage::RESOURCE,
+            sample_count: 1,
+            external: None,
+        });
+        let view = self.gpu_context.create_texture_view(
+            texture,
+            gpu::TextureViewDesc {
+                name,
+                format,
+                dimension: gpu::ViewDimension::D2,
+                subresources: &Default::default(),
+            },
+        );
+
+        // Expand RGB f32 → RGBA f32 (alpha = 1.0)
+        let rgba: Vec<[f32; 4]> = data.iter().map(|&[r, g, b]| [r, g, b, 1.0]).collect();
+        let byte_data = unsafe {
+            std::slice::from_raw_parts(rgba.as_ptr() as *const u8, std::mem::size_of_val(rgba.as_slice()))
+        };
+        let stage = self.gpu_context.create_buffer(gpu::BufferDesc {
+            name: &format!("{name}/stage"),
+            size: byte_data.len() as u64,
+            memory: gpu::Memory::Upload,
+        });
+        unsafe {
+            ptr::copy_nonoverlapping(byte_data.as_ptr(), stage.data(), byte_data.len());
+        }
+
+        let bytes_per_row = width * 4 * 4; // 4 channels × 4 bytes
+        let mut pending_ops = self.pending_operations.lock().unwrap();
+        pending_ops.initializations.push(Initialization { dst: texture });
+        pending_ops.transfers.push(Transfer { stage, bytes_per_row, dst: texture, extent, mip_level: 0 });
+
+        Texture { object: texture, view, extent }
+    }
+
+    /// Update an existing HDR texture in-place (no allocation, reuses GPU texture).
+    pub fn update_texture_hdr(&self, texture: &Texture, data: &[[f32; 3]]) {
+        use blade_graphics as gpu;
+
+        let rgba: Vec<[f32; 4]> = data.iter().map(|&[r, g, b]| [r, g, b, 1.0]).collect();
+        let byte_data = unsafe {
+            std::slice::from_raw_parts(rgba.as_ptr() as *const u8, std::mem::size_of_val(rgba.as_slice()))
+        };
+        let stage = self.gpu_context.create_buffer(gpu::BufferDesc {
+            name: "env_hdr/stage",
+            size: byte_data.len() as u64,
+            memory: gpu::Memory::Upload,
+        });
+        unsafe {
+            ptr::copy_nonoverlapping(byte_data.as_ptr(), stage.data(), byte_data.len());
+        }
+        let bytes_per_row = texture.extent.width * 4 * 4;
+        let mut pending_ops = self.pending_operations.lock().unwrap();
+        pending_ops.transfers.push(Transfer {
+            stage,
+            bytes_per_row,
+            dst: texture.object,
+            extent: texture.extent,
+            mip_level: 0,
+        });
+    }
 }
 
 impl blade_asset::Baker for Baker {

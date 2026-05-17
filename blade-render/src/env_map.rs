@@ -89,85 +89,92 @@ impl EnvironmentMap {
         encoder: &mut blade_graphics::CommandEncoder,
         gpu: &blade_graphics::Context,
     ) {
-        if self.main_view == view {
-            return;
-        }
+        let view_changed = self.main_view != view;
         self.main_view = view;
         self.size = extent;
-        // Free old textures but keep the compute pipeline alive (we use it below).
-        if let Some(weight_texture) = self.weight_texture.take() {
-            gpu.destroy_texture(weight_texture);
-            gpu.destroy_texture_view(self.weight_view);
-        }
-        for old_view in self.weight_mips.drain(..) {
-            gpu.destroy_texture_view(old_view);
-        }
 
-        let mip_level_count = extent
-            .width
-            .max(extent.height)
-            .next_power_of_two()
-            .trailing_zeros();
-        let weight_extent = self.weight_size();
-        let format = blade_graphics::TextureFormat::Rgba16Float;
-        self.weight_texture = Some(gpu.create_texture(blade_graphics::TextureDesc {
-            name: "env-weight",
-            format,
-            size: weight_extent,
-            dimension: blade_graphics::TextureDimension::D2,
-            array_layer_count: 1,
-            mip_level_count,
-            usage: blade_graphics::TextureUsage::RESOURCE | blade_graphics::TextureUsage::STORAGE,
-            sample_count: 1,
-            external: None,
-        }));
-        let weight_texture = self.weight_texture.unwrap();
-        self.weight_view = gpu.create_texture_view(
-            weight_texture,
-            blade_graphics::TextureViewDesc {
+        if view_changed {
+            // Reallocate weight textures only when the texture object itself changed
+            if let Some(weight_texture) = self.weight_texture.take() {
+                gpu.destroy_texture(weight_texture);
+                gpu.destroy_texture_view(self.weight_view);
+            }
+            for old_view in self.weight_mips.drain(..) {
+                gpu.destroy_texture_view(old_view);
+            }
+
+            let mip_level_count = extent
+                .width
+                .max(extent.height)
+                .next_power_of_two()
+                .trailing_zeros();
+            let weight_extent = self.weight_size();
+            let format = blade_graphics::TextureFormat::Rgba16Float;
+            self.weight_texture = Some(gpu.create_texture(blade_graphics::TextureDesc {
                 name: "env-weight",
                 format,
-                dimension: blade_graphics::ViewDimension::D2,
-                subresources: &Default::default(),
-            },
-        );
-        for base_mip_level in 0..mip_level_count {
-            let view = gpu.create_texture_view(
+                size: weight_extent,
+                dimension: blade_graphics::TextureDimension::D2,
+                array_layer_count: 1,
+                mip_level_count,
+                usage: blade_graphics::TextureUsage::RESOURCE | blade_graphics::TextureUsage::STORAGE,
+                sample_count: 1,
+                external: None,
+            }));
+            let weight_texture = self.weight_texture.unwrap();
+            self.weight_view = gpu.create_texture_view(
                 weight_texture,
                 blade_graphics::TextureViewDesc {
-                    name: &format!("env-weight-mip{}", base_mip_level),
+                    name: "env-weight",
                     format,
                     dimension: blade_graphics::ViewDimension::D2,
-                    subresources: &blade_graphics::TextureSubresources {
-                        base_mip_level,
-                        mip_level_count: NonZeroU32::new(1),
-                        ..Default::default()
-                    },
+                    subresources: &Default::default(),
                 },
             );
-            self.weight_mips.push(view);
+            for base_mip_level in 0..mip_level_count {
+                let wv = gpu.create_texture_view(
+                    weight_texture,
+                    blade_graphics::TextureViewDesc {
+                        name: &format!("env-weight-mip{}", base_mip_level),
+                        format,
+                        dimension: blade_graphics::ViewDimension::D2,
+                        subresources: &blade_graphics::TextureSubresources {
+                            base_mip_level,
+                            mip_level_count: NonZeroU32::new(1),
+                            ..Default::default()
+                        },
+                    },
+                );
+                self.weight_mips.push(wv);
+            }
+            encoder.init_texture(weight_texture);
         }
 
-        encoder.init_texture(weight_texture);
-        for target_level in 0..mip_level_count {
-            let groups = self
-                .prepare_pipeline
-                .get_dispatch_for(weight_extent.at_mip_level(target_level));
-            let mut compute = encoder.compute("pre-process env map");
-            let mut pass = compute.with(&self.prepare_pipeline);
-            pass.bind(
-                0,
-                &EnvPreprocData {
-                    source: if target_level == 0 {
-                        view
-                    } else {
-                        self.weight_mips[target_level as usize - 1]
+        // Always recompute weights — env-map pixel data may have changed even if
+        // the texture handle is the same (dynamic env-map updated in-place).
+        if !self.weight_mips.is_empty() {
+            let weight_extent = self.weight_size();
+            let mip_level_count = self.weight_mips.len() as u32;
+            for target_level in 0..mip_level_count {
+                let groups = self
+                    .prepare_pipeline
+                    .get_dispatch_for(weight_extent.at_mip_level(target_level));
+                let mut compute = encoder.compute("pre-process env map");
+                let mut pass = compute.with(&self.prepare_pipeline);
+                pass.bind(
+                    0,
+                    &EnvPreprocData {
+                        source: if target_level == 0 {
+                            view
+                        } else {
+                            self.weight_mips[target_level as usize - 1]
+                        },
+                        destination: self.weight_mips[target_level as usize],
+                        params: EnvPreprocParams { target_level },
                     },
-                    destination: self.weight_mips[target_level as usize],
-                    params: EnvPreprocParams { target_level },
-                },
-            );
-            pass.dispatch(groups);
+                );
+                pass.dispatch(groups);
+            }
         }
     }
 }

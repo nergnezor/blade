@@ -583,6 +583,51 @@ impl Baker {
             transform_offset += mem::size_of::<blade_graphics::Transform>() as u64;
         }
 
+        let vertex_stride = mem::size_of::<crate::Vertex>() as u32;
+        let mut meshes = Vec::with_capacity(model_geometries.len());
+        for (i, geo) in model_geometries.iter().enumerate() {
+            meshes.push(blade_graphics::AccelerationStructureMesh {
+                vertex_data: vertex_buffer
+                    .at(geo.vertex_range.start as u64 * vertex_stride as u64),
+                vertex_format: blade_graphics::VertexFormat::F32Vec3,
+                vertex_stride,
+                vertex_count: geo.vertex_range.end - geo.vertex_range.start,
+                index_data: index_buffer.at(geo.index_offset),
+                index_type: geo.index_type,
+                triangle_count: geo.triangle_count,
+                transform_data: transform_buffer
+                    .at((i * mem::size_of::<blade_graphics::Transform>()) as u64),
+                is_opaque: true,
+            });
+        }
+
+        let ray_tracing_enabled = !self.gpu_context.capabilities().ray_query.is_empty();
+        let acceleration_structure = if ray_tracing_enabled {
+            let sizes = self
+                .gpu_context
+                .get_bottom_level_acceleration_structure_sizes(&meshes);
+            let acceleration_structure =
+                self.gpu_context
+                    .create_acceleration_structure(blade_graphics::AccelerationStructureDesc {
+                        name,
+                        ty: blade_graphics::AccelerationStructureType::BottomLevel,
+                        size: sizes.data,
+                    });
+            let scratch = self.gpu_context.create_buffer(blade_graphics::BufferDesc {
+                name: "BLAS scratch",
+                size: sizes.scratch,
+                memory: blade_graphics::Memory::Device,
+            });
+            self.pending_operations.lock().unwrap().blas_constructs.push(BlasConstruct {
+                meshes,
+                scratch,
+                dst: acceleration_structure,
+            });
+            acceleration_structure
+        } else {
+            blade_graphics::AccelerationStructure::default()
+        };
+
         Model {
             name: name.to_string(),
             winding: 1.0,
@@ -591,7 +636,7 @@ impl Baker {
             vertex_buffer,
             index_buffer,
             transform_buffer,
-            acceleration_structure: blade_graphics::AccelerationStructure::default(),
+            acceleration_structure,
         }
     }
 }

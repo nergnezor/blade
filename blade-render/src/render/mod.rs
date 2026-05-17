@@ -325,6 +325,7 @@ pub struct RayTracer {
     env_map: EnvironmentMap,
     dummy: DummyResources,
     hit_buffer: blade_graphics::Buffer,
+    point_lights_buf: blade_graphics::Buffer,
     vertex_buffers: blade_graphics::BufferArray<MAX_RESOURCES>,
     index_buffers: blade_graphics::BufferArray<MAX_RESOURCES>,
     textures: blade_graphics::TextureArray<MAX_RESOURCES>,
@@ -410,6 +411,7 @@ struct MainData {
     debug_buf: blade_graphics::BufferPiece,
     reservoirs: blade_graphics::BufferPiece,
     prev_reservoirs: blade_graphics::BufferPiece,
+    point_lights: blade_graphics::BufferPiece,
     out_diffuse: blade_graphics::TextureView,
     out_debug: blade_graphics::TextureView,
 }
@@ -723,6 +725,7 @@ impl RayTracer {
             env_map: EnvironmentMap::with_pipeline(&dummy, sp.env_prepare),
             dummy,
             hit_buffer: blade_graphics::Buffer::default(),
+            point_lights_buf: blade_graphics::Buffer::default(),
             vertex_buffers: blade_graphics::BufferArray::new(),
             index_buffers: blade_graphics::BufferArray::new(),
             textures: blade_graphics::TextureArray::new(),
@@ -744,6 +747,9 @@ impl RayTracer {
         self.targets.destroy(gpu);
         if self.hit_buffer != blade_graphics::Buffer::default() {
             gpu.destroy_buffer(self.hit_buffer);
+        }
+        if self.point_lights_buf != blade_graphics::Buffer::default() {
+            gpu.destroy_buffer(self.point_lights_buf);
         }
         gpu.destroy_acceleration_structure(self.acceleration_structure);
         if self.prev_acceleration_structure != blade_graphics::AccelerationStructure::default() {
@@ -843,6 +849,30 @@ impl RayTracer {
     }
     pub fn view_environment_weight(&self) -> blade_graphics::TextureView {
         self.env_map.weight_view
+    }
+
+    pub fn set_point_lights(
+        &mut self,
+        lights: &[crate::PointLight],
+        gpu: &blade_graphics::Context,
+        _encoder: &mut blade_graphics::CommandEncoder,
+    ) {
+        if self.point_lights_buf != blade_graphics::Buffer::default() {
+            gpu.destroy_buffer(self.point_lights_buf);
+            self.point_lights_buf = blade_graphics::Buffer::default();
+        }
+        // Always allocate at least one element so the buffer is valid
+        let count = lights.len().max(1);
+        let size = (count * mem::size_of::<crate::PointLight>()) as u64;
+        self.point_lights_buf = gpu.create_buffer(blade_graphics::BufferDesc {
+            name: "point-lights",
+            size,
+            memory: blade_graphics::Memory::Shared,
+        });
+        unsafe {
+            let dst = self.point_lights_buf.data() as *mut crate::PointLight;
+            std::ptr::copy_nonoverlapping(lights.as_ptr(), dst, lights.len());
+        }
     }
 
     #[profiling::function]
@@ -968,10 +998,12 @@ impl RayTracer {
                     },
                     base_color_factor: {
                         let c = material.base_color_factor;
+                        let t = object.color_tint;
+                        // alpha channel carries emissive — don't tint it
                         [
-                            (c[0] * 255.0) as u8,
-                            (c[1] * 255.0) as u8,
-                            (c[2] * 255.0) as u8,
+                            (c[0] * t[0] * 255.0).min(255.0) as u8,
+                            (c[1] * t[1] * 255.0).min(255.0) as u8,
+                            (c[2] * t[2] * 255.0).min(255.0) as u8,
                             (c[3] * 255.0) as u8,
                         ]
                     },
@@ -984,16 +1016,14 @@ impl RayTracer {
                     },
                     normal_scale: material.normal_scale,
                     emissive_factor: {
-                        let e = object.color_tint[3].min(1.0);
-                        [(object.color_tint[0] * e * 255.0) as u8,
-                         (object.color_tint[1] * e * 255.0) as u8,
-                         (object.color_tint[2] * e * 255.0) as u8,
-                         0]
+                        // color_tint[3] is emissive intensity; stored in red channel
+                        let e = object.color_tint[3];
+                        [(e * 255.0).min(255.0) as u8, 0, 0, 0]
                     },
                     _pad: [0; 3],
                 };
 
-                log::debug!("Entry[{geometry_index}] = {hit_entry:?}");
+                log::trace!("Entry[{geometry_index}] = {hit_entry:?}");
                 unsafe {
                     ptr::write(
                         (hit_staging.data() as *mut HitEntry).add(geometry_index),
@@ -1207,6 +1237,7 @@ impl RayTracer {
                     debug_buf: self.debug.buffer_resource(),
                     reservoirs: self.targets.reservoir_buf[cur].into(),
                     prev_reservoirs: self.targets.reservoir_buf[prev].into(),
+                    point_lights: self.point_lights_buf.into(),
                     out_diffuse: self.targets.light_diffuse.views[cur],
                     out_debug: self.targets.debug.views[0],
                 },

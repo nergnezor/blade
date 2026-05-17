@@ -626,7 +626,7 @@ impl<B: Baker> AssetManager<B> {
     /// Hot reload a changed asset.
     pub fn hot_reload(&self, handle: &mut Handle<B::Output>) -> Option<&choir::RunningTask> {
         let slot = unsafe { &mut *self.slots.get_mut_ptr(handle.inner) };
-        let file_name = slot.sources.first().unwrap().to_owned();
+        let file_name = slot.sources.first()?.to_owned();
         self.create_impl(slot, &file_name, None)
             .map(|(version, task)| {
                 handle.version = version;
